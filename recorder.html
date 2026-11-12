@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Bar VBT · Recorder</title>
+<style>
+:root{--bg:#0f1113;--panel:#171a1e;--line:#2a2f35;--text:#e8eaed;--muted:#8a929b;--accent:#4fd1a5;--warn:#ff6b5b;--rec:#ff4d4d}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:720px;margin:0 auto;padding:16px}
+header{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:12px}
+h1{font-size:18px;margin:0}
+h2{font-size:13px;margin:0 0 10px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.06em}
+a{color:var(--accent)}
+.status{font-size:13px;color:var(--muted);display:flex;align-items:center;gap:6px}
+.dot{width:8px;height:8px;border-radius:50%;background:#555}.dot.on{background:var(--accent)}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end}.row+.row{margin-top:10px}
+label{font-size:12px;color:var(--muted);display:flex;flex-direction:column;gap:4px}
+select,input{background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font:inherit}
+input[type=number]{width:88px}input.wide{width:220px}
+button{background:#23282e;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:9px 14px;font:inherit;cursor:pointer}
+button.primary{background:var(--accent);color:#06261b;border-color:var(--accent);font-weight:600}
+button.rec{background:var(--rec);border-color:var(--rec);color:#fff;font-weight:700;font-size:18px;padding:16px;width:100%}
+button.rec.stop{background:#23282e;color:var(--rec);border-color:var(--rec)}
+button:disabled{opacity:.4;cursor:default}
+.live{font-variant-numeric:tabular-nums;font-size:13px;color:var(--muted);margin-top:8px}
+.timer{font-size:40px;font-weight:700;text-align:center;font-variant-numeric:tabular-nums;margin:6px 0 10px}
+table{width:100%;border-collapse:collapse;font-size:14px;font-variant-numeric:tabular-nums}
+th,td{text-align:left;padding:6px 4px;border-bottom:1px solid var(--line)}th{font-size:12px;color:var(--muted);font-weight:500}
+td button{padding:5px 9px;font-size:13px}
+.muted{color:var(--muted);font-size:13px}
+code{font-size:12px;background:var(--bg);padding:1px 4px;border-radius:4px}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Recorder</h1>
+    <div class="status"><span class="dot" id="dot"></span><span id="status">Not connected</span></div>
+  </header>
+
+  <section class="panel">
+    <div class="row">
+      <button class="primary" id="connect">Connect sensor</button>
+      <button id="demo">Test without sensor</button>
+      <button id="disconnect" disabled>Disconnect</button>
+      <a href="./" style="margin-left:auto;font-size:13px;align-self:center">← Tracker</a>
+    </div>
+    <div class="live" id="live">No data</div>
+  </section>
+
+  <section class="panel">
+    <div class="row">
+      <label>Lift<select id="lift"><option value="squat">Squat</option><option value="bench">Bench</option><option value="deadlift">Deadlift</option></select></label>
+      <label>Load (kg)<input id="load" type="number" min="0" step="2.5" value="100"></label>
+      <label>Reps done<input id="reps" type="number" min="0" step="1" value="5"></label>
+      <label>RPE<input id="rpe" type="number" min="1" max="10" step="0.5" placeholder="opt."></label>
+    </div>
+    <div class="row">
+      <label>Notes<input id="notes" class="wide" placeholder="e.g. pause reps, belt, filmed"></label>
+    </div>
+    <div class="timer" id="timer">0:00.0</div>
+    <button class="rec" id="rec" disabled>● Record set</button>
+    <p class="muted">Start recording with the bar still in the rack and stop after re-racking, so every file begins and ends at rest. Fill in reps and RPE before you hit Stop — they're saved with the set.</p>
+  </section>
+
+  <section class="panel">
+    <h2>Recorded sets</h2>
+    <table><thead><tr><th>Set</th><th>Samples</th><th>Dropped</th><th></th></tr></thead><tbody id="sets"></tbody></table>
+    <p class="muted" id="noSets">Nothing recorded yet. Sets are kept in this browser until you delete them.</p>
+    <div class="row" style="margin-top:10px">
+      <button id="dlAll" disabled>Download all (one CSV)</button>
+      <button id="clearAll" disabled>Delete all</button>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>File format</h2>
+    <p class="muted">One row per sample at 100 Hz. Lines starting with <code>#</code> are metadata (<code>pd.read_csv(f, comment='#')</code>). Columns: <code>t</code> seconds from start, <code>seq</code> device sample index, <code>ax ay az</code> m/s² and <code>gx gy gz</code> rad/s in the sensor frame (gravity included, nothing filtered), <code>filled</code> = 1 where a dropped sample was replaced with the previous one. The combined CSV adds <code>set_id, lift, load_kg, reps, rpe</code> columns.</p>
+  </section>
+</main>
+
+<script>
+const G = 9.80665, DEG = Math.PI / 180;
+const SVC = 'b1a7e001-5c3b-4f0e-9a1e-7f2d0b6c0001', CHR = 'b1a7e002-5c3b-4f0e-9a1e-7f2d0b6c0001';
+const $ = id => document.getElementById(id);
+
+let device = null, demoTimer = null, connected = false;
+let expectSeq = null, lastRaw = null, totalDropped = 0;
+let rec = null;            // active recording: { start, rows: [] }
+let sets = [];             // saved recordings
+
+// ---------- storage (IndexedDB, falls back to memory only) ----------
+let db = null;
+function openDB() {
+  return new Promise(res => {
+    try {
+      const r = indexedDB.open('barvbt-recorder', 1);
+      r.onupgradeneeded = () => r.result.createObjectStore('sets', { keyPath: 'id' });
+      r.onsuccess = () => { db = r.result; res(); };
+      r.onerror = () => res();
+    } catch (e) { res(); }
+  });
+}
+function dbAll() {
+  return new Promise(res => {
+    if (!db) return res([]);
+    try { const q = db.transaction('sets').objectStore('sets').getAll(); q.onsuccess = () => res(q.result || []); q.onerror = () => res([]); }
+    catch (e) { res([]); }
+  });
+}
+function dbPut(s) { try { db && db.transaction('sets', 'readwrite').objectStore('sets').put(s); } catch (e) {} }
+function dbDel(id) { try { db && db.transaction('sets', 'readwrite').objectStore('sets').delete(id); } catch (e) {} }
+function dbClear() { try { db && db.transaction('sets', 'readwrite').objectStore('sets').clear(); } catch (e) {} }
+
+// ---------- data in ----------
+// raw = [seq, ax, ay, az (mg), gx, gy, gz (0.1 dps)]
+function onRaw(raw, filled) {
+  const [, ax, ay, az, gx, gy, gz] = raw;
+  if (rec) rec.rows.push([raw[0], ax, ay, az, gx, gy, gz, filled ? 1 : 0]);
+  liveRaw = raw;
+}
+let liveRaw = null;
+
+function setStatus(t, on) { $('status').textContent = t; $('dot').className = 'dot' + (on ? ' on' : ''); }
+function setConnected(on) {
+  connected = on;
+  $('connect').disabled = $('demo').disabled = on;
+  $('disconnect').disabled = !on;
+  $('rec').disabled = !on;
+  if (!on && rec) stopRec();
+}
+
+async function connect() {
+  if (!navigator.bluetooth) { setStatus('Web Bluetooth unavailable — use Chrome on Android/desktop'); return; }
+  try {
+    device = await navigator.bluetooth.requestDevice({ filters: [{ services: [SVC] }] });
+    device.addEventListener('gattserverdisconnected', () => { setConnected(false); setStatus('Sensor disconnected'); });
+    const server = await device.gatt.connect();
+    const chr = await (await server.getPrimaryService(SVC)).getCharacteristic(CHR);
+    chr.addEventListener('characteristicvaluechanged', onPacket);
+    expectSeq = null; lastRaw = null; totalDropped = 0;
+    await chr.startNotifications();
+    setConnected(true); setStatus(`${device.name || 'Sensor'} connected`, true);
+  } catch (e) { setStatus(e.name === 'NotFoundError' ? 'No device chosen' : 'Connect failed: ' + e.message); }
+}
+function onPacket(e) {
+  const dv = e.target.value, seq = dv.getUint16(0, true), n = Math.floor((dv.byteLength - 2) / 12);
+  if (expectSeq !== null && lastRaw) {
+    const gap = (seq - expectSeq + 65536) % 65536;
+    if (gap > 0 && gap < 500) {
+      totalDropped += gap;
+      if (rec) rec.dropped += gap;
+      for (let k = 0; k < gap; k++) onRaw([(expectSeq + k) % 65536, ...lastRaw.slice(1)], true);
+    }
+  }
+  for (let k = 0; k < n; k++) {
+    const o = 2 + 12 * k;
+    const raw = [(seq + k) % 65536];
+    for (let q = 0; q < 6; q++) raw.push(dv.getInt16(o + 2 * q, true));
+    lastRaw = raw; onRaw(raw, false);
+  }
+  expectSeq = (seq + n) % 65536;
+}
+function disconnect() {
+  if (demoTimer) { clearInterval(demoTimer); demoTimer = null; }
+  if (device && device.gatt.connected) { try { device.gatt.disconnect(); } catch (e) {} }
+  setConnected(false); setStatus('Not connected');
+}
+function demo() {
+  // Sensor at rest with noise, so the record/export path can be tested without hardware.
+  let seq = 0;
+  demoTimer = setInterval(() => {
+    for (let k = 0; k < 5; k++) {
+      const r = () => Math.round((Math.random() - 0.5) * 20);
+      onRaw([seq++ % 65536, 120 + r(), -60 + r(), 995 + r(), r(), r(), r()], false);
+    }
+  }, 50);
+  setConnected(true); setStatus('Test data (no sensor)', true);
+}
+
+// ---------- recording ----------
+function startRec() {
+  rec = { start: new Date(), rows: [], dropped: 0 };
+  $('rec').textContent = '■ Stop'; $('rec').classList.add('stop');
+}
+function stopRec() {
+  const r = rec; rec = null;
+  $('rec').textContent = '● Record set'; $('rec').classList.remove('stop');
+  if (!r || r.rows.length < 10) return;
+  const s = {
+    id: r.start.getTime(),
+    started: r.start.toISOString(),
+    lift: $('lift').value, load: +$('load').value || 0, reps: +$('reps').value || 0,
+    rpe: $('rpe').value === '' ? '' : +$('rpe').value, notes: $('notes').value,
+    dropped: r.dropped, rows: r.rows,
+  };
+  sets.push(s); dbPut(s); renderSets();
+}
+$('rec').onclick = () => (rec ? stopRec() : startRec());
+
+// ---------- export ----------
+function fname(s) {
+  const t = new Date(s.started), p2 = n => String(n).padStart(2, '0');
+  const d = `${t.getFullYear()}-${p2(t.getMonth() + 1)}-${p2(t.getDate())}_${p2(t.getHours())}${p2(t.getMinutes())}`; // local time
+  return `${s.lift}_${s.load}kg_${s.reps}r_${d}.csv`;
+}
+function rowsCsv(s, extra) {
+  const out = [];
+  s.rows.forEach((r, i) => {
+    const vals = [(i / 100).toFixed(2), r[0],
+      ...[r[1], r[2], r[3]].map(v => (v / 1000 * G).toFixed(4)),
+      ...[r[4], r[5], r[6]].map(v => (v / 10 * DEG).toFixed(5)), r[7]];
+    out.push((extra ? extra + ',' : '') + vals.join(','));
+  });
+  return out.join('\n');
+}
+function setCsv(s) {
+  const meta = [`# lift=${s.lift}`, `# load_kg=${s.load}`, `# reps=${s.reps}`, `# rpe=${s.rpe}`, `# started=${s.started}`,
+    `# notes=${(s.notes || '').replace(/\n/g, ' ')}`, `# sample_rate_hz=100`, `# dropped_samples=${s.dropped}`];
+  return meta.join('\n') + '\nt,seq,ax,ay,az,gx,gy,gz,filled\n' + rowsCsv(s) + '\n';
+}
+function allCsv() {
+  const head = 'set_id,lift,load_kg,reps,rpe,t,seq,ax,ay,az,gx,gy,gz,filled\n';
+  return head + sets.map(s => rowsCsv(s, [s.id, s.lift, s.load, s.reps, s.rpe].join(','))).join('\n') + '\n';
+}
+async function deliver(name, text) {
+  const blob = new Blob([text], { type: 'text/csv' });
+  // Phone: share sheet (save to Drive/Files). Otherwise a normal download.
+  try {
+    const file = new File([blob], name, { type: 'text/csv' });
+    if (navigator.canShare && navigator.canShare({ files: [file] }) && /Android|iPhone|iPad/.test(navigator.userAgent)) {
+      await navigator.share({ files: [file], title: name }); return;
+    }
+  } catch (e) { if (e.name === 'AbortError') return; }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+
+function renderSets() {
+  const tb = $('sets'); tb.innerHTML = '';
+  sets.slice().reverse().forEach(s => {
+    const tr = tb.insertRow();
+    const d = new Date(s.started);
+    tr.insertCell().textContent = `${d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })} ${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · ${s.lift} ${s.load}kg × ${s.reps}`;
+    tr.insertCell().textContent = `${s.rows.length} (${(s.rows.length / 100).toFixed(1)} s)`;
+    tr.insertCell().textContent = s.dropped;
+    const c = tr.insertCell(); c.style.textAlign = 'right'; c.style.whiteSpace = 'nowrap';
+    const dl = document.createElement('button'); dl.textContent = 'CSV'; dl.onclick = () => deliver(fname(s), setCsv(s));
+    const del = document.createElement('button'); del.textContent = '✕'; del.style.marginLeft = '6px';
+    let armed = false;
+    del.onclick = () => {
+      if (!armed) { armed = true; del.textContent = 'Delete?'; setTimeout(() => { armed = false; del.textContent = '✕'; }, 2500); return; }
+      sets = sets.filter(x => x.id !== s.id); dbDel(s.id); renderSets();
+    };
+    c.append(dl, del);
+  });
+  $('noSets').style.display = sets.length ? 'none' : '';
+  $('dlAll').disabled = $('clearAll').disabled = !sets.length;
+}
+$('dlAll').onclick = () => deliver(`barvbt_all_${new Date().toISOString().slice(0, 10)}.csv`, allCsv());
+let clearArmed = false;
+$('clearAll').onclick = () => {
+  if (!clearArmed) { clearArmed = true; $('clearAll').textContent = 'Tap again to delete all'; setTimeout(() => { clearArmed = false; $('clearAll').textContent = 'Delete all'; }, 3000); return; }
+  sets = []; dbClear(); clearArmed = false; $('clearAll').textContent = 'Delete all'; renderSets();
+};
+
+// ---------- live readout ----------
+setInterval(() => {
+  if (rec) { const s = rec.rows.length / 100; $('timer').textContent = `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, '0')}`; }
+  if (liveRaw && connected) {
+    const [, ax, ay, az, gx, gy, gz] = liveRaw;
+    const am = Math.hypot(ax, ay, az) / 1000 * G, wm = Math.hypot(gx, gy, gz) / 10;
+    $('live').textContent = `|a| ${am.toFixed(2)} m/s² · gyro ${wm.toFixed(1)} °/s · dropped ${totalDropped}` + (rec ? ` · recording ${rec.rows.length} samples` : '');
+  }
+}, 100);
+
+$('connect').onclick = connect;
+$('demo').onclick = demo;
+$('disconnect').onclick = disconnect;
+openDB().then(dbAll).then(r => { sets = r.sort((a, b) => a.id - b.id); renderSets(); });
+</script>
+</body>
+</html>
