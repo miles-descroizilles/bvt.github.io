@@ -1,0 +1,535 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Bar VBT</title>
+<style>
+:root{--bg:#0f1113;--panel:#171a1e;--line:#2a2f35;--text:#e8eaed;--muted:#8a929b;--accent:#4fd1a5;--warn:#ff6b5b;--amber:#f5b84a}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:720px;margin:0 auto;padding:16px}
+header{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:12px}
+h1{font-size:18px;margin:0;letter-spacing:.02em}
+h2{font-size:13px;margin:0 0 10px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.06em}
+.status{font-size:13px;color:var(--muted);display:flex;align-items:center;gap:6px;text-align:right}
+.dot{width:8px;height:8px;border-radius:50%;background:#555;flex:none}
+.dot.ble{background:var(--accent)}.dot.sim{background:var(--amber)}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end}
+.row+.row{margin-top:10px}
+label{font-size:12px;color:var(--muted);display:flex;flex-direction:column;gap:4px}
+select,input{background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font:inherit}
+input[type=number]{width:88px}
+button{background:#23282e;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:9px 14px;font:inherit;cursor:pointer}
+button.primary{background:var(--accent);color:#06261b;border-color:var(--accent);font-weight:600}
+button.danger{color:var(--warn)}
+button:disabled{opacity:.4;cursor:default}
+.big{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;text-align:center}
+.big .v{font-size:42px;font-weight:700;font-variant-numeric:tabular-nums;line-height:1.05}
+.big .k{font-size:12px;color:var(--muted)}
+.over{color:var(--warn)}
+.motion{font-size:12px;color:var(--muted);text-align:center;margin-top:6px}
+canvas{width:100%;height:170px;display:block}
+table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums;font-size:14px}
+th,td{text-align:right;padding:6px 4px;border-bottom:1px solid var(--line)}
+th{font-size:12px;color:var(--muted);font-weight:500}
+th:first-child,td:first-child{text-align:left}
+.alert{background:rgba(255,107,91,.12);color:var(--warn);border:1px solid rgba(255,107,91,.4);border-radius:8px;padding:8px 12px;margin-top:10px;font-weight:600;display:none}
+.muted{color:var(--muted);font-size:13px}
+details summary{cursor:pointer;color:var(--muted);font-size:13px}
+details[open] summary{margin-bottom:10px}
+code{font-size:12px;background:var(--bg);padding:1px 4px;border-radius:4px}
+.empty{color:var(--muted);font-size:13px;padding:8px 0}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Bar VBT</h1>
+    <div class="status"><span class="dot" id="dot"></span><span id="status">Not connected</span></div>
+  </header>
+
+  <section class="panel">
+    <div class="row">
+      <label>Lift
+        <select id="lift"></select>
+      </label>
+      <label>Load (kg)<input id="load" type="number" min="0" step="2.5" value="100"></label>
+      <label>VL cutoff (%)<input id="vlcut" type="number" min="5" max="60" step="5" value="20"></label>
+    </div>
+    <div class="row">
+      <button class="primary" id="connect">Connect sensor</button>
+      <button id="sim">Simulate set</button>
+      <button id="disconnect" disabled>Stop</button>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="big">
+      <div><div class="v" id="bigMain">–</div><div class="k" id="bigMainLabel">Last rep MCV (m/s)</div></div>
+      <div><div class="v" id="bigPeak">–</div><div class="k">Peak (m/s)</div></div>
+      <div><div class="v" id="bigVL">–</div><div class="k">Velocity loss</div></div>
+    </div>
+    <div class="alert" id="alert">Velocity loss past cutoff — end the set</div>
+    <div class="motion" id="motion">Waiting for data</div>
+  </section>
+
+  <section class="panel">
+    <h2>Bar velocity</h2>
+    <canvas id="chart"></canvas>
+  </section>
+
+  <section class="panel">
+    <h2>Current set</h2>
+    <table id="repTable"><thead><tr><th>Rep</th><th>MCV</th><th>Peak</th><th>ROM (cm)</th><th>Time (s)</th><th>VL</th><th id="truthHead" hidden>Sim truth</th></tr></thead><tbody></tbody></table>
+    <div class="empty" id="repEmpty">No reps yet. Reps finalise each time the bar is still for ~0.3 s (lockout pause or rack).</div>
+    <div class="row" style="margin-top:10px">
+      <button class="primary" id="saveSet" disabled>Save set</button>
+      <button id="discardSet" disabled>Discard</button>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Load–velocity profile · <span id="lvLift"></span></h2>
+    <div id="lv"></div>
+  </section>
+
+  <section class="panel">
+    <h2>History</h2>
+    <div id="history"></div>
+    <div class="row" style="margin-top:10px">
+      <button id="copyHist">Copy as CSV</button>
+      <button class="danger" id="clearHist">Clear history</button>
+    </div>
+  </section>
+
+  <section class="panel">
+    <details>
+      <summary>Detection settings</summary>
+      <div class="row">
+        <label>Still accel (m/s²)<input id="cStillAcc" type="number" step="0.05" value="0.40"></label>
+        <label>Still gyro (°/s)<input id="cStillGyro" type="number" step="1" value="20"></label>
+        <label>Still time (s)<input id="cStillT" type="number" step="0.05" value="0.30"></label>
+        <label>Min ROM (cm)<input id="cMinRom" type="number" step="1" value="12"></label>
+        <label>MVT (m/s)<input id="cMvt" type="number" step="0.01" value="0.30"></label>
+      </div>
+      <p class="muted" id="diag">Sensor readout appears once data is streaming.</p>
+      <p class="muted">Velocity comes from integrating vertical acceleration. Drift is removed by assuming the bar is at zero velocity whenever it's held still, so reps appear when the bar pauses. Touch-and-go reps with no pause show up together when you rack. If still periods aren't being detected (no reps appearing), raise the still accel/gyro thresholds. MVT is the minimum velocity threshold used for the e1RM estimate.</p>
+    </details>
+    <details>
+      <summary>Device protocol</summary>
+      <p class="muted">BLE service <code>b1a7e001-5c3b-4f0e-9a1e-7f2d0b6c0001</code>, notify characteristic <code>b1a7e002-5c3b-4f0e-9a1e-7f2d0b6c0001</code>. Each packet: <code>uint16 seq</code> (index of first sample, wraps), then N samples of <code>int16 ax,ay,az</code> (mg) and <code>int16 gx,gy,gz</code> (0.1 °/s), little-endian, fixed 100 Hz. Dropped samples are filled with the last good sample.</p>
+    </details>
+  </section>
+</main>
+
+<script>
+// CORE START
+const G = 9.80665, FS = 100, DT = 1 / FS, DEG = Math.PI / 180;
+const LIFTS = {
+  squat:    { name: 'Squat',       oly: false, mvt: 0.30, rom: 0.55, m0: 0.62, ecc: 'first' },
+  bench:    { name: 'Bench',       oly: false, mvt: 0.17, rom: 0.42, m0: 0.55, ecc: 'first' },
+  deadlift: { name: 'Deadlift',    oly: false, mvt: 0.15, rom: 0.50, m0: 0.50, ecc: 'after' },
+  clean:    { name: 'Power clean', oly: true,  rom: 0.95, peak: 1.75 },
+  snatch:   { name: 'Snatch',      oly: true,  rom: 1.25, peak: 2.0 },
+  other:    { name: 'Other',       oly: false, mvt: 0.25, rom: 0.50, m0: 0.55, ecc: 'first' },
+};
+
+function norm3(v) { const m = Math.hypot(v[0], v[1], v[2]) || 1; return [v[0] / m, v[1] / m, v[2] / m]; }
+
+// Streams body-frame IMU samples in, emits reps.
+// a: specific force [m/s²], w: angular rate [rad/s], both in the sensor frame.
+class BarProcessor {
+  constructor(cb = {}) {
+    this.cb = cb;
+    this.cfg = { stillAcc: 0.40, stillGyro: 20 * DEG, stillN: 30, minRom: 0.12, oly: false };
+    this.reset();
+  }
+  reset() { this.up = null; this.bias = 0; this.gRef = null; this.cal = []; this.win = []; this.diag = null; this.stillRun = 0; this.seg = null; this.pre = []; this.vLive = 0; this.i = 0; }
+  push(a, w) {
+    const i = this.i++;
+    const am = Math.hypot(a[0], a[1], a[2]);
+    if (!this.up) this.up = norm3(a);
+    // Track the world "up" direction in the sensor frame: gyro propagation + gentle accel correction.
+    const u = this.up;
+    let nu = [
+      u[0] - (w[1] * u[2] - w[2] * u[1]) * DT,
+      u[1] - (w[2] * u[0] - w[0] * u[2]) * DT,
+      u[2] - (w[0] * u[1] - w[1] * u[0]) * DT,
+    ];
+    const wm = Math.hypot(w[0], w[1], w[2]);
+    // Learn this sensor's resting |a| (factory offset can be ±0.4 m/s²) from the first 0.5 s instead of assuming 9.81.
+    if (this.gRef === null) {
+      this.cal.push(am);
+      if (this.cal.length < FS / 2) { this.cb.onSample && this.cb.onSample(i, 0, false); return; }
+      this.gRef = this.cal.reduce((x, y) => x + y, 0) / this.cal.length;
+    }
+    this.win.push([am, wm]); if (this.win.length > FS) this.win.shift();
+    const isStill = Math.abs(am - this.gRef) < this.cfg.stillAcc && wm < this.cfg.stillGyro;
+    this.diag = { am, wm, gRef: this.gRef };
+    const k = isStill ? 0.05 : (Math.abs(am - this.gRef) < 1.5 ? 0.003 : 0);
+    if (k > 0) { const an = norm3(a); nu = [nu[0] * (1 - k) + an[0] * k, nu[1] * (1 - k) + an[1] * k, nu[2] * (1 - k) + an[2] * k]; }
+    this.up = norm3(nu);
+    const avRaw = a[0] * this.up[0] + a[1] * this.up[1] + a[2] * this.up[2] - this.gRef; // vertical linear accel
+    if (this.seg === null && isStill) {               // keep learning at rest
+      this.gRef += 0.01 * (am - this.gRef);
+      this.bias += 0.02 * (avRaw - this.bias);
+    }
+    const av = avRaw - this.bias;
+    this.stillRun = isStill ? this.stillRun + 1 : 0;
+
+    if (this.seg === null) {
+      this.pre.push(av); if (this.pre.length > 10) this.pre.shift();
+      this.vLive = 0;
+      if (!isStill) {
+        this.seg = { start: i - this.pre.length + 1, a: this.pre.slice() };
+        this.pre = [];
+        for (let j = 1; j < this.seg.a.length; j++) this.vLive += 0.5 * (this.seg.a[j - 1] + this.seg.a[j]) * DT;
+      }
+    } else {
+      const prev = this.seg.a[this.seg.a.length - 1];
+      this.seg.a.push(av);
+      this.vLive += 0.5 * (prev + av) * DT;
+      // A grinding rep at near-constant speed also reads as "still" to an accelerometer,
+      // so only accept a short still period if integrated velocity is also near zero.
+      if (this.stillRun >= this.cfg.stillN && (Math.abs(this.vLive) < 0.2 || this.stillRun >= 3 * this.cfg.stillN)) { this._finish(); this.vLive = 0; }
+      else if (this.win.length === FS && this.seg.a.length > FS) {
+        // Safety net: 1 s of essentially constant |a| with no rotation is a resting bar, even if
+        // |a| sits outside the still threshold (resting reading drifted). Re-learn it and reset.
+        let lo = Infinity, hi = -Infinity, sum = 0, wmax = 0;
+        for (const [x, y] of this.win) { lo = Math.min(lo, x); hi = Math.max(hi, x); sum += x; wmax = Math.max(wmax, y); }
+        if (hi - lo < 0.3 && wmax < this.cfg.stillGyro) {
+          const mean = sum / FS;
+          this.gRef = mean;
+          this._finish(); this.vLive = 0; this.stillRun = this.cfg.stillN;
+        }
+      }
+    }
+    this.cb.onSample && this.cb.onSample(i, this.vLive, this.seg !== null);
+  }
+  _finish() {
+    const s = this.seg; this.seg = null; this.pre = [];
+    const a = s.a, n = a.length;
+    const v = new Float64Array(n);
+    for (let j = 1; j < n; j++) v[j] = v[j - 1] + 0.5 * (a[j - 1] + a[j]) * DT;
+    const drift = v[n - 1];
+    for (let j = 0; j < n; j++) v[j] -= drift * j / (n - 1); // bar is still at both ends → v = 0
+    let reps = [];
+    if (n >= FS * 0.4) {
+      let j = 0;
+      while (j < n) {
+        if (v[j] > 0.05) {
+          // Concentric phase = contiguous run above 0.05 m/s (keeps short top pauses and residual drift out of the mean).
+          let st = j; while (st > 0 && v[st - 1] > 0.01) st--;
+          let en = j; while (en < n && v[en] > 0.01) en++;
+          // Trim a residual-drift plateau (e.g. a short lockout pause) off the end.
+          while (en - 1 > j && v[en - 1] < 0.05) en--;
+          let disp = 0, pk = 0;
+          for (let q = st; q < en; q++) { disp += v[q] * DT; if (v[q] > pk) pk = v[q]; }
+          const dur = (en - st) * DT;
+          if (disp >= this.cfg.minRom) reps.push({ start: s.start + st, end: s.start + en, rom: disp, dur, mcv: disp / dur, peak: pk });
+          j = en;
+        } else j++;
+      }
+      if (this.cfg.oly && reps.length > 1) reps = [reps.reduce((b, r) => (r.peak > b.peak ? r : b))];
+    }
+    this.cb.onSegment && this.cb.onSegment(s.start, v);
+    for (const r of reps) this.cb.onRep && this.cb.onRep(r);
+  }
+}
+
+function gauss() { let u = 0; while (!u) u = Math.random(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * Math.random()); }
+
+// Synthetic set: returns sensor-frame samples (quantised like the BLE packets) and true rep velocities.
+function simulateSet(key, nReps) {
+  const L = LIFTS[key], vs = [], truth = [];
+  const phase = (T, f) => { const n = Math.max(1, Math.round(T * FS)); for (let i = 0; i < n; i++) vs.push(f((i + 0.5) / n)); };
+  const hold = T => phase(T, () => 0);
+  const sine = (disp, vpk) => { const s = vs.length; phase(Math.abs(disp) * Math.PI / (2 * vpk), x => Math.sign(disp) * vpk * Math.sin(Math.PI * x)); return s; };
+  const record = s => { let sum = 0, pk = 0; for (let i = s; i < vs.length; i++) { sum += vs[i]; pk = Math.max(pk, vs[i]); } truth.push({ mcv: sum / (vs.length - s), peak: pk }); };
+  hold(1.2);
+  for (let r = 0; r < nReps; r++) {
+    const last = r === nReps - 1;
+    if (L.oly) {
+      if (r > 0) hold(1.5);
+      record(sine(L.rom, L.peak * (1 + 0.03 * gauss())));
+      sine(-0.15, 0.9); sine(0.15, 0.5); hold(1.2); sine(-L.rom, 1.0);
+      hold(last ? 1.5 : 0.8);
+    } else {
+      const m = L.m0 * (1 - 0.055 * r) * (1 + 0.03 * gauss());
+      if (L.ecc === 'first') {
+        sine(-L.rom, 0.75);
+        record(sine(L.rom, m * Math.PI / 2));
+        hold(last ? 1.5 : 0.15 + Math.random() * 0.5);
+      } else {
+        record(sine(L.rom, m * Math.PI / 2));
+        hold(0.3); sine(-L.rom, 0.9);
+        hold(last ? 1.5 : 0.3 + Math.random() * 0.6);
+      }
+    }
+  }
+  // Random fixed mounting orientation + bar roll about sensor x.
+  const ax = norm3([gauss(), gauss(), gauss()]), ang = Math.random() * Math.PI;
+  const c = Math.cos(ang), s = Math.sin(ang), t = 1 - c, [x, y, z] = ax;
+  const R0 = [[t*x*x+c, t*x*y-s*z, t*x*z+s*y], [t*x*y+s*z, t*y*y+c, t*y*z-s*x], [t*x*z-s*y, t*y*z+s*x, t*z*z+c]];
+  const ab = [0.25 * gauss(), 0.25 * gauss(), 0.25 * gauss()], gb = [0.004 * gauss(), 0.004 * gauss(), 0.004 * gauss()];
+  const out = [];
+  for (let i = 0; i < vs.length; i++) {
+    const tt = i * DT;
+    const acc = (i > 0 && i < vs.length - 1) ? (vs[i + 1] - vs[i - 1]) / (2 * DT) : 0;
+    const f = G + acc;
+    const th = 0.06 * Math.sin(2 * Math.PI * 0.25 * tt) + 0.02 * Math.sin(2 * Math.PI * 0.9 * tt + 1);
+    const thd = 0.06 * 2 * Math.PI * 0.25 * Math.cos(2 * Math.PI * 0.25 * tt) + 0.02 * 2 * Math.PI * 0.9 * Math.cos(2 * Math.PI * 0.9 * tt + 1);
+    const p = [R0[0][2] * f, R0[1][2] * f, R0[2][2] * f]; // R0ᵀ·[0,0,f] with R0 mapping sensor→world
+    const ct = Math.cos(th), st = Math.sin(th);
+    const fb = [p[0], ct * p[1] + st * p[2], -st * p[1] + ct * p[2]];
+    const a = fb.map((q, k) => Math.round((q + ab[k] + 0.05 * gauss()) / G * 1000) / 1000 * G);
+    const w = [thd, 0, 0].map((q, k) => Math.round((q + gb[k] + 0.01 * gauss()) / DEG * 10) / 10 * DEG);
+    out.push([a, w]);
+  }
+  return { samples: out, truth };
+}
+// CORE END
+
+// ---------- App ----------
+const $ = id => document.getElementById(id);
+const SVC = 'b1a7e001-5c3b-4f0e-9a1e-7f2d0b6c0001', CHR = 'b1a7e002-5c3b-4f0e-9a1e-7f2d0b6c0001';
+const STORE = 'barvbt.v1';
+const TRACE_N = 800;
+const trace = new Float32Array(TRACE_N);
+let traceHead = -1;
+let mode = 'idle', device = null, chr = null, simTimer = null, expectSeq = null, dropped = 0, lastSample = null;
+let setReps = [], simTruth = null, moving = false;
+let history = loadHistory();
+const mvtOverride = {};
+
+const proc = new BarProcessor({
+  onSample(i, v, mv) { traceHead = i; trace[i % TRACE_N] = v; moving = mv; },
+  onSegment(start, v) { for (let j = 0; j < v.length; j++) { const idx = start + j; if (idx > traceHead - TRACE_N && idx <= traceHead) trace[idx % TRACE_N] = v[j]; } },
+  onRep(r) { setReps.push(r); renderSet(); },
+});
+
+for (const [k, L] of Object.entries(LIFTS)) $('lift').add(new Option(L.name, k));
+try { const saved = JSON.parse(localStorage.getItem('barvbt.ui') || '{}'); if (saved.lift && LIFTS[saved.lift]) $('lift').value = saved.lift; if (saved.load) $('load').value = saved.load; if (saved.vlcut) $('vlcut').value = saved.vlcut; } catch (e) {}
+
+function lift() { return $('lift').value; }
+function isOly() { return LIFTS[lift()].oly; }
+function saveUI() { try { localStorage.setItem('barvbt.ui', JSON.stringify({ lift: lift(), load: $('load').value, vlcut: $('vlcut').value })); } catch (e) {} }
+function loadHistory() { try { return JSON.parse(localStorage.getItem(STORE) || '[]'); } catch (e) { return []; } }
+function saveHistory() { try { localStorage.setItem(STORE, JSON.stringify(history)); } catch (e) {} }
+
+function applyCfg() {
+  proc.cfg.stillAcc = +$('cStillAcc').value || 0.4;
+  proc.cfg.stillGyro = (+$('cStillGyro').value || 20) * DEG;
+  proc.cfg.stillN = Math.max(5, Math.round((+$('cStillT').value || 0.3) * FS));
+  proc.cfg.minRom = (+$('cMinRom').value || 12) / 100;
+  proc.cfg.oly = isOly();
+}
+function onLiftChange() {
+  const L = LIFTS[lift()];
+  $('cMinRom').value = L.oly ? 30 : 12;
+  $('cMvt').value = L.oly ? '' : (mvtOverride[lift()] ?? L.mvt);
+  $('cMvt').disabled = L.oly;
+  $('bigMainLabel').textContent = L.oly ? 'Last rep peak (m/s)' : 'Last rep MCV (m/s)';
+  applyCfg(); saveUI(); renderSet(); renderLV(); renderHistory();
+}
+['cStillAcc', 'cStillGyro', 'cStillT', 'cMinRom'].forEach(id => $(id).addEventListener('change', applyCfg));
+$('cMvt').addEventListener('change', () => { mvtOverride[lift()] = +$('cMvt').value; renderLV(); });
+$('lift').addEventListener('change', onLiftChange);
+$('load').addEventListener('change', saveUI);
+$('vlcut').addEventListener('change', () => { saveUI(); renderSet(); });
+
+function setStatus(text, kind) { $('status').textContent = text; $('dot').className = 'dot ' + (kind || ''); }
+function setMode(m) {
+  mode = m;
+  $('connect').disabled = m !== 'idle'; $('sim').disabled = m !== 'idle'; $('disconnect').disabled = m === 'idle';
+  if (m === 'idle') setStatus(device ? 'Disconnected' : 'Not connected');
+}
+
+// ---- BLE ----
+async function connect() {
+  if (!navigator.bluetooth) { setStatus('Web Bluetooth unavailable — use Chrome on Android/desktop over HTTPS'); return; }
+  try {
+    setStatus('Choose the BarVBT device…');
+    device = await navigator.bluetooth.requestDevice({ filters: [{ services: [SVC] }] });
+    device.addEventListener('gattserverdisconnected', () => { if (mode === 'ble') { setMode('idle'); setStatus('Sensor disconnected'); } });
+    const server = await device.gatt.connect();
+    const svc = await server.getPrimaryService(SVC);
+    chr = await svc.getCharacteristic(CHR);
+    chr.addEventListener('characteristicvaluechanged', onPacket);
+    proc.reset(); expectSeq = null; dropped = 0; lastSample = null;
+    await chr.startNotifications();
+    setMode('ble'); setStatus(`${device.name || 'Sensor'} connected`, 'ble');
+  } catch (e) { setMode('idle'); setStatus(e.name === 'NotFoundError' ? 'No device chosen' : 'Connect failed: ' + e.message); }
+}
+function onPacket(e) {
+  const dv = e.target.value;
+  const seq = dv.getUint16(0, true);
+  const n = Math.floor((dv.byteLength - 2) / 12);
+  if (expectSeq !== null && lastSample) {
+    const gap = (seq - expectSeq + 65536) % 65536;
+    if (gap > 0 && gap < 500) { dropped += gap; for (let k = 0; k < gap; k++) proc.push(lastSample[0], lastSample[1]); }
+  }
+  for (let k = 0; k < n; k++) {
+    const o = 2 + 12 * k;
+    const a = [dv.getInt16(o, true), dv.getInt16(o + 2, true), dv.getInt16(o + 4, true)].map(q => q / 1000 * G);
+    const w = [dv.getInt16(o + 6, true), dv.getInt16(o + 8, true), dv.getInt16(o + 10, true)].map(q => q / 10 * DEG);
+    lastSample = [a, w]; proc.push(a, w);
+  }
+  expectSeq = (seq + n) % 65536;
+}
+function stop() {
+  if (simTimer) { clearInterval(simTimer); simTimer = null; }
+  if (device && device.gatt.connected) { try { device.gatt.disconnect(); } catch (e) {} }
+  setMode('idle');
+}
+
+// ---- Simulator ----
+function simulate() {
+  applyCfg();
+  const L = LIFTS[lift()];
+  const n = L.oly ? 3 : 6 + Math.floor(Math.random() * 3);
+  const { samples, truth } = simulateSet(lift(), n);
+  clearSet(); proc.reset(); simTruth = truth;
+  $('truthHead').hidden = false;
+  setMode('sim'); setStatus(`Simulating ${n} reps`, 'sim');
+  let i = 0;
+  simTimer = setInterval(() => {
+    for (let k = 0; k < 5 && i < samples.length; k++, i++) proc.push(samples[i][0], samples[i][1]);
+    if (i >= samples.length) { clearInterval(simTimer); simTimer = null; setMode('idle'); setStatus('Simulation done'); }
+  }, 50);
+}
+
+// ---- Set ----
+function bestOf(reps) { return reps.length ? Math.max(...reps.map(r => isOly() ? r.peak : r.mcv)) : 0; }
+function vlOf(r, best) { return best > 0 ? (best - (isOly() ? r.peak : r.mcv)) / best * 100 : 0; }
+function renderSet() {
+  const tb = $('repTable').tBodies[0]; tb.innerHTML = '';
+  const best = bestOf(setReps), cut = +$('vlcut').value || 20;
+  setReps.forEach((r, i) => {
+    const vl = vlOf(r, best), tr = tb.insertRow();
+    const t = simTruth && simTruth[i];
+    const cells = [i + 1, r.mcv.toFixed(2), r.peak.toFixed(2), (r.rom * 100).toFixed(0), r.dur.toFixed(2), vl.toFixed(0) + '%'];
+    if (simTruth) cells.push(t ? (isOly() ? t.peak : t.mcv).toFixed(2) : '–');
+    cells.forEach((c, k) => { const td = tr.insertCell(); td.textContent = c; if (k === 5 && vl > cut) td.className = 'over'; });
+  });
+  $('repEmpty').style.display = setReps.length ? 'none' : '';
+  const last = setReps[setReps.length - 1];
+  $('bigMain').textContent = last ? (isOly() ? last.peak : last.mcv).toFixed(2) : '–';
+  $('bigPeak').textContent = last ? last.peak.toFixed(2) : '–';
+  const vl = last ? vlOf(last, best) : null;
+  $('bigVL').textContent = vl === null ? '–' : vl.toFixed(0) + '%';
+  $('bigVL').className = 'v' + (vl !== null && vl > cut ? ' over' : '');
+  const over = vl !== null && vl > cut;
+  if (over && $('alert').style.display !== 'block') { try { navigator.vibrate && navigator.vibrate([200, 100, 200]); } catch (e) {} }
+  $('alert').style.display = over ? 'block' : 'none';
+  $('saveSet').disabled = $('discardSet').disabled = !setReps.length;
+}
+function clearSet() { setReps = []; simTruth = null; $('truthHead').hidden = true; renderSet(); }
+$('saveSet').onclick = () => {
+  const best = bestOf(setReps);
+  history.push({
+    date: new Date().toISOString(), lift: lift(), load: +$('load').value || 0,
+    reps: setReps.map(r => ({ mcv: +r.mcv.toFixed(3), peak: +r.peak.toFixed(3), rom: +r.rom.toFixed(3) })),
+    best: +best.toFixed(3), vlEnd: +vlOf(setReps[setReps.length - 1], best).toFixed(1),
+  });
+  saveHistory(); clearSet(); renderLV(); renderHistory();
+};
+$('discardSet').onclick = clearSet;
+
+// ---- Load–velocity ----
+function renderLV() {
+  const L = LIFTS[lift()], el = $('lv');
+  $('lvLift').textContent = L.name;
+  const sets = history.filter(s => s.lift === lift() && s.load > 0);
+  if (L.oly) {
+    el.innerHTML = sets.length ? '' : '<div class="empty">No saved sets yet. For Olympic lifts, track best peak velocity at each load over time.</div>';
+    if (sets.length) {
+      const byLoad = {};
+      sets.forEach(s => { (byLoad[s.load] ||= []).push(s.best); });
+      el.innerHTML = '<table><thead><tr><th>Load</th><th>Sets</th><th>Best peak</th><th>Latest peak</th></tr></thead><tbody>' +
+        Object.keys(byLoad).sort((a, b) => a - b).map(l => { const v = byLoad[l]; return `<tr><td>${l} kg</td><td>${v.length}</td><td>${Math.max(...v).toFixed(2)}</td><td>${v[v.length - 1].toFixed(2)}</td></tr>`; }).join('') + '</tbody></table>';
+    }
+    return;
+  }
+  // Use the most recent 12 sets, one point per set (fastest rep).
+  const pts = sets.slice(-12).map(s => [s.load, s.best]);
+  const loads = new Set(pts.map(p => p[0]));
+  if (loads.size < 2) { el.innerHTML = `<div class="empty">Save sets at 2+ different loads to build the profile (${pts.length} saved so far).</div>`; return; }
+  const n = pts.length, mx = pts.reduce((s, p) => s + p[0], 0) / n, my = pts.reduce((s, p) => s + p[1], 0) / n;
+  let sxy = 0, sxx = 0, syy = 0;
+  pts.forEach(([x, y]) => { sxy += (x - mx) * (y - my); sxx += (x - mx) ** 2; syy += (y - my) ** 2; });
+  const b = sxy / sxx, a = my - b * mx, r2 = syy > 0 ? (sxy * sxy) / (sxx * syy) : 0;
+  const mvt = +$('cMvt').value || L.mvt;
+  const e1rm = b < 0 ? (mvt - a) / b : NaN;
+  el.innerHTML = `<div class="big" style="margin-bottom:10px">
+      <div><div class="v">${isFinite(e1rm) ? e1rm.toFixed(0) : '–'}</div><div class="k">Est. 1RM (kg) @ ${mvt.toFixed(2)} m/s</div></div>
+      <div><div class="v">${r2.toFixed(2)}</div><div class="k">R²</div></div>
+      <div><div class="v">${n}</div><div class="k">Sets used</div></div></div>
+    <div class="muted">v = ${a.toFixed(3)} ${b < 0 ? '−' : '+'} ${Math.abs(b).toFixed(4)} × load${b >= 0 ? ' · slope isn’t negative yet, so no estimate' : ''}. Uses each set’s fastest rep from the last 12 saved sets. Low R² or loads bunched together make the estimate unreliable.</div>`;
+}
+
+// ---- History ----
+function renderHistory() {
+  const el = $('history');
+  if (!history.length) { el.innerHTML = '<div class="empty">No saved sets.</div>'; return; }
+  const rows = history.slice(-15).reverse().map(s => {
+    const d = new Date(s.date);
+    return `<tr><td>${d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })} ${LIFTS[s.lift]?.name || s.lift}</td><td>${s.load}</td><td>${s.reps.length}</td><td>${s.best.toFixed(2)}</td><td>${s.vlEnd.toFixed(0)}%</td></tr>`;
+  }).join('');
+  el.innerHTML = `<table><thead><tr><th>Set</th><th>kg</th><th>Reps</th><th>Best</th><th>VL end</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+$('copyHist').onclick = async () => {
+  const lines = ['date,lift,load,rep,mcv,peak,rom'];
+  history.forEach(s => s.reps.forEach((r, i) => lines.push([s.date, s.lift, s.load, i + 1, r.mcv, r.peak, r.rom].join(','))));
+  try { await navigator.clipboard.writeText(lines.join('\n')); $('copyHist').textContent = 'Copied'; }
+  catch (e) { $('copyHist').textContent = 'Copy blocked'; }
+  setTimeout(() => { $('copyHist').textContent = 'Copy as CSV'; }, 1500);
+};
+let clearArmed = false;
+$('clearHist').onclick = () => {
+  if (!clearArmed) { clearArmed = true; $('clearHist').textContent = 'Tap again to clear'; setTimeout(() => { clearArmed = false; $('clearHist').textContent = 'Clear history'; }, 3000); return; }
+  history = []; saveHistory(); clearArmed = false; $('clearHist').textContent = 'Clear history'; renderLV(); renderHistory();
+};
+
+// ---- Chart ----
+const cv = $('chart'), ctx = cv.getContext('2d');
+function draw() {
+  const dpr = window.devicePixelRatio || 1, W = cv.clientWidth, H = cv.clientHeight;
+  if (cv.width !== W * dpr || cv.height !== H * dpr) { cv.width = W * dpr; cv.height = H * dpr; }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, W, H);
+  const vmax = isOly() ? 2.5 : 1.2, vmin = -vmax * 0.8;
+  const y = v => H - 16 - (v - vmin) / (vmax - vmin) * (H - 24);
+  ctx.font = '11px system-ui'; ctx.fillStyle = '#8a929b'; ctx.strokeStyle = '#2a2f35'; ctx.lineWidth = 1;
+  const step = isOly() ? 0.5 : 0.25;
+  for (let g = Math.ceil(vmin / step) * step; g <= vmax + 1e-9; g += step) {
+    ctx.beginPath(); ctx.moveTo(30, y(g)); ctx.lineTo(W, y(g)); ctx.stroke();
+    ctx.fillText(g.toFixed(2), 0, y(g) + 4);
+  }
+  ctx.strokeStyle = '#4a525b'; ctx.beginPath(); ctx.moveTo(30, y(0)); ctx.lineTo(W, y(0)); ctx.stroke();
+  if (traceHead >= 0) {
+    const n = Math.min(TRACE_N, traceHead + 1), x0 = 30, xs = (W - x0) / (TRACE_N - 1);
+    ctx.strokeStyle = '#4fd1a5'; ctx.lineWidth = 2; ctx.beginPath();
+    for (let k = 0; k < n; k++) {
+      const idx = traceHead - n + 1 + k, v = Math.max(vmin, Math.min(vmax, trace[idx % TRACE_N]));
+      const px = x0 + (TRACE_N - n + k) * xs;
+      k ? ctx.lineTo(px, y(v)) : ctx.moveTo(px, y(v));
+    }
+    ctx.stroke();
+  }
+  ctx.fillStyle = '#8a929b'; ctx.fillText('m/s · last 8 s', W - 80, 12);
+  $('motion').textContent = mode === 'idle' && traceHead < 0 ? 'Waiting for data' : (moving ? 'Moving…' : 'Still');
+  if (proc.diag) $('diag').textContent = `Live: |a| ${proc.diag.am.toFixed(2)} m/s² (resting ref ${proc.diag.gRef.toFixed(2)}), gyro ${(proc.diag.wm / DEG).toFixed(1)} °/s. Still needs |a| within ±${proc.cfg.stillAcc} of ref and gyro < ${(proc.cfg.stillGyro / DEG).toFixed(0)} °/s.`;
+  if (mode === 'ble' && dropped) $('status').textContent = `${device.name || 'Sensor'} connected · ${dropped} samples dropped`;
+  requestAnimationFrame(draw);
+}
+
+$('connect').onclick = connect;
+$('sim').onclick = simulate;
+$('disconnect').onclick = stop;
+onLiftChange();
+requestAnimationFrame(draw);
+</script>
+</body>
+</html>
